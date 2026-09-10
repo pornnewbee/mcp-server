@@ -1,82 +1,52 @@
-# MCP Shell Server
+# shell-mcp-server
 
-A Model Context Protocol (MCP) server that provides remote shell execution and file operations.
+MCP Shell Server v2 — an [MCP](https://modelcontextprotocol.io) (Model Context Protocol) server that exposes shell capabilities over HTTP.
+
+Built with the MCP Python SDK v2 (`MCPServer`). Listens on `127.0.0.1:6942`.
 
 ## Features
 
-- **Shell Commands** - Execute shell commands on the remote server
-- **Interactive Sessions** - Start, interact with, and manage long-running PTY sessions
-- **File Operations** - Read and write files directly, bypassing shell encoding issues
-- **Dual Transport** - Supports both SSE (Cline) and Streamable HTTP (Cursor) on the same port
+- `run_command` — execute non-interactive shell commands and return stdout/stderr/exit code
+- `start_session` / `send_input` / `read_output` / `close_session` — interactive PTY sessions
+- `start_background` — background PTY processes
+- `write_file` / `read_file` — direct file access (bypasses shell encoding issues)
 
-## Tools
+## Endpoints
 
-### Shell
+| Path       | Purpose                          |
+|------------|----------------------------------|
+| `/mcp`     | Streamable HTTP (modern MCP)     |
+| `/sse`     | SSE (legacy MCP clients)         |
+| `/messages`| SSE message endpoint            |
+| `/health`  | Health check                    |
 
-| Tool | Description |
-|------|-------------|
-| run_command | Execute a shell command and return stdout/stderr |
-| start_session | Start an interactive PTY session |
-| send_input | Send input to a running session |
-| read_output | Read output from a running session |
-| list_sessions | List all active sessions |
-| close_session | Close a session |
-| start_background | Start a long-running command in background |
+## Run
 
-### File Operations
-
-| Tool | Description |
-|------|-------------|
-| write_file | Write content directly to a file (no shell encoding issues) |
-| read_file | Read content from a file |
-
-## Why write_file and read_file?
-
-The original run_command tool passes content through shell heredocs, which can break with special characters like backticks, dollar signs, quotes, and JSON. The write_file tool bypasses the shell entirely using Python built-in open().write(), making it safe for any content.
-
-## Usage
-
-### Claude Desktop / Cline
-
-Add to your MCP configuration:
-
-```json
-{
-  "mcpServers": {
-    "shell-server": {
-      "url": "http://your-server:6942/sse",
-      "type": "sse"
-    }
-  }
-}
+```bash
+python3 shell_mcp.py
 ```
 
-### Cursor
+The provided systemd unit (`shell-mcp.service`) runs it as user `runner`:
 
-```json
-{
-  "mcpServers": {
-    "shell-server": {
-      "url": "http://your-server:6942/mcp",
-      "type": "streamable-http"
-    }
-  }
-}
+```ini
+[Service]
+Type=simple
+User=runner
+WorkingDirectory=/home/runner
+ExecStart=/home/runner/mcp-venv/bin/python /home/runner/shell_mcp.py
+Environment=PYTHONUNBUFFERED=1
 ```
 
-## Requirements
+## Notable fix: `TIOCSWINSZ`
 
-- Python 3.10+
-- mcp, uvicorn, starlette
+The PTY child in `_create_pty_session()` originally passed a hardcoded `0x5410`
+to `fcntl.ioctl()`. On Linux `0x5410` is **`TIOCSPGRP`** (set foreground process
+group), *not* `TIOCSWINSZ` (`0x5414`) as intended. The mismatched ioctl returned
+`ENOTTY`, the exception was swallowed by `except Exception: os._exit(127)`, and
+every interactive session died immediately (child became a zombie, sessions were
+never visible to `list_sessions`). Fixed by using the `termios.TIOCSWINSZ`
+constant.
 
-Install: pip install mcp uvicorn starlette
+## Logs
 
-## Running
-
-python shell_mcp.py
-
-The server listens on 127.0.0.1:6942 by default.
-
-## License
-
-MIT
+`/tmp/mcp_shell.log` (file logging) and journald (`journalctl -u shell-mcp`).
